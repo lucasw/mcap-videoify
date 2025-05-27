@@ -11,6 +11,7 @@ anyhow = "1.0.75"
 camino = "1.1.6"
 memmap = "0.7.0"
 serde_rosmsg = "0.2.0"
+tokio = "1.45.1"
 
 [dependencies.roslibrust]
 git = "https://github.com/lucasw/roslibrust"
@@ -24,3 +25,11 @@ version = "0.2.0"
 [dependencies.tf_roslibrust]
 git = "https://github.com/lucasw/tf_roslibrust"
 version = "0.2.5"
+
+[[bin]]
+name = "mcap_convert_compressed_to_h264"
+path = "src/main.rs"
+
+[[bin]]
+name = "h264_to_image"
+path = "src/bin/h264_to_image.rs"
