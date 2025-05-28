@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Cursor;
+use std::io::Write;
 use std::{env, fs};
 
 fn map_mcap<P: AsRef<Utf8Path>>(p: P) -> Result<Mmap> {
@@ -40,10 +41,8 @@ fn mcap_write<T: RosMessageType>(
     )
 }
 
-fn read_it() -> Result<(), anyhow::Error> {
-    let args: Vec<String> = env::args().collect();
-
-    let mapped = map_mcap(&args[1])?;
+fn read_it(input_mcap_name: &str) -> Result<()> {
+    let mapped = map_mcap(input_mcap_name)?;
 
     let mut encoders_by_topic: HashMap<String, Encoder> = HashMap::new();
 
@@ -55,6 +54,11 @@ fn read_it() -> Result<(), anyhow::Error> {
         File::create("compressed_video.mcap").unwrap(),
     ))
     .unwrap();
+
+    // TODO(lucasw) make writing to these optional
+    // these files can be played with mplayer or vlc but don't have the correct frame rate
+    // and generate error messages
+    let mut h264_file_by_topic: HashMap<String, File> = HashMap::new();
 
     let schema_id = video_mcap.add_schema(
         CompressedImage::ROS_TYPE_NAME,
@@ -96,6 +100,11 @@ fn read_it() -> Result<(), anyhow::Error> {
 
         let topic = std::format!("{topic}_video", topic = full_message.channel.topic);
 
+        let h264_file = h264_file_by_topic.entry(topic.clone()).or_insert_with(|| {
+            let name = format!("{}.h264", topic.replace("/", "_"));
+            File::create(name).unwrap()
+        });
+
         let encoder = encoders_by_topic.entry(topic.clone()).or_insert_with(|| {
             // fixme - command line argument for bitrate
             let config =
@@ -111,6 +120,7 @@ fn read_it() -> Result<(), anyhow::Error> {
         out_msg.header.frame_id = frame_id;
         out_msg.format = "h264".to_string();
         out_msg.data = bitstream.to_vec();
+        h264_file.write_all(&out_msg.data)?;
 
         let channel_id = topic_channel_ids
             .entry(topic.clone())
@@ -133,6 +143,9 @@ fn read_it() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn main() {
-    read_it().unwrap();
+fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let input_mcap_name = &args[1];
+    read_it(input_mcap_name)?;
+    Ok(())
 }
