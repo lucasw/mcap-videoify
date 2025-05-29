@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use image::io::Reader as ImageReader;
 use memmap::Mmap;
+use minimp4::Mp4Muxer;
 use openh264::encoder::{Encoder, EncoderConfig};
 use openh264::formats::YUVBuffer;
 use roslibrust::RosMessageType;
@@ -10,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Cursor;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::{env, fs};
 
 fn map_mcap<P: AsRef<Utf8Path>>(p: P) -> Result<Mmap> {
@@ -58,7 +59,7 @@ fn read_it(input_mcap_name: &str) -> Result<()> {
     // TODO(lucasw) make writing to these optional
     // these files can be played with mplayer or vlc but don't have the correct frame rate
     // and generate error messages
-    let mut h264_file_by_topic: HashMap<String, File> = HashMap::new();
+    let mut h264_data_by_topic: HashMap<String, (usize, usize, Vec<u8>)> = HashMap::new();
 
     let schema_id = video_mcap.add_schema(
         CompressedImage::ROS_TYPE_NAME,
@@ -100,10 +101,13 @@ fn read_it(input_mcap_name: &str) -> Result<()> {
 
         let topic = std::format!("{topic}_video", topic = full_message.channel.topic);
 
-        let h264_file = h264_file_by_topic.entry(topic.clone()).or_insert_with(|| {
-            let name = format!("{}.h264", topic.replace("/", "_"));
-            File::create(name).unwrap()
-        });
+        let (width2, height2, h264_data) =
+            h264_data_by_topic.entry(topic.clone()).or_insert_with(|| {
+                println!("{topic}");
+                (width, height, Vec::new())
+            });
+        assert!(width == *width2);
+        assert!(height == *height2);
 
         let encoder = encoders_by_topic.entry(topic.clone()).or_insert_with(|| {
             // fixme - command line argument for bitrate
@@ -114,13 +118,13 @@ fn read_it(input_mcap_name: &str) -> Result<()> {
 
         let yuv = YUVBuffer::with_rgb(width, height, rgb8);
         let bitstream = encoder.encode(&yuv).unwrap();
+        bitstream.write_vec(h264_data);
 
         let mut out_msg = CompressedImage::default();
         out_msg.header.stamp = timestamp;
         out_msg.header.frame_id = frame_id;
         out_msg.format = "h264".to_string();
         out_msg.data = bitstream.to_vec();
-        h264_file.write_all(&out_msg.data)?;
 
         let channel_id = topic_channel_ids
             .entry(topic.clone())
@@ -137,6 +141,20 @@ fn read_it(input_mcap_name: &str) -> Result<()> {
             out_msg.header.clone(),
             *channel_id,
         )?;
+    }
+
+    for (topic, (width, height, h264_data)) in h264_data_by_topic {
+        let name = format!("{}.mp4", topic.replace("/", "_"));
+        println!("muxing h264 to {name}");
+        let mut video_buffer = Cursor::new(Vec::new());
+        let mut mp4muxer = Mp4Muxer::new(&mut video_buffer);
+        mp4muxer.init_video(width as i32, height as i32, false, &topic);
+        mp4muxer.write_video(&h264_data);
+        mp4muxer.close();
+        video_buffer.seek(SeekFrom::Start(0))?;
+        let mut video_bytes = Vec::new();
+        video_buffer.read_to_end(&mut video_bytes)?;
+        std::fs::write(&name, &video_bytes)?;
     }
 
     video_mcap.finish().unwrap();
